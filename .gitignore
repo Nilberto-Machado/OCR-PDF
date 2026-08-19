@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+saida_ocr/
+*_OCR.pdf
+*.ocr.tmp.pdf

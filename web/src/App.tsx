@@ -31,6 +31,33 @@ function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
+function drawOcrLayer(
+  page: ReturnType<PDFDocument['getPage']>,
+  words: Array<{ text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }>,
+  canvasWidth: number,
+  canvasHeight: number,
+  font: Awaited<ReturnType<PDFDocument['embedFont']>>,
+) {
+  const pageSize = page.getSize()
+  const scaleX = pageSize.width / canvasWidth
+  const scaleY = pageSize.height / canvasHeight
+  for (const word of words) {
+    const text = word.text.trim()
+    if (!text) continue
+    const x = word.bbox.x0 * scaleX
+    const top = word.bbox.y0 * scaleY
+    const height = Math.max((word.bbox.y1 - word.bbox.y0) * scaleY, 1)
+    page.drawText(text, {
+      x,
+      y: pageSize.height - top - height,
+      size: Math.max(1, height * 0.82),
+      font,
+      color: rgb(0, 0, 0),
+      opacity: 0,
+    })
+  }
+}
+
 function App() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [queue, setQueue] = useState<QueueFile[]>([])
@@ -166,9 +193,8 @@ function App() {
         const [page] = await outputPdf.copyPages(sourcePdf, [pageNumber - 1])
         outputPdf.addPage(page)
         const outputPage = outputPdf.getPage(outputPdf.getPageCount() - 1)
-        const pageSize = outputPage.getSize()
-        const text = result.data.text.trim()
-        if (text) outputPage.drawText(text, { x: 4, y: pageSize.height - 18, size: 10, font, color: rgb(0, 0, 0), opacity: 0, maxWidth: pageSize.width - 8 })
+        const words = result.data.blocks?.flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines.flatMap((line) => line.words))) ?? []
+        drawOcrLayer(outputPage, words, canvas.width, canvas.height, font)
         setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, progress: pageNumber / source.numPages } : entry))
         canvas.width = 1
         canvas.height = 1

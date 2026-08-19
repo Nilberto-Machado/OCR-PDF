@@ -170,6 +170,7 @@ class OrientationTests(unittest.TestCase):
                 self.assertGreater(result[0].rect.width, result[0].rect.height)
                 self.assertIn("DOCUMENTO", text)
                 self.assertIn("LEGIVEL", text)
+                self.assertTrue(result[0].search_for("DOCUMENTO"))
 
     def test_ocr_restores_an_upside_down_portrait_resume(self) -> None:
         upright_document = fitz.open()

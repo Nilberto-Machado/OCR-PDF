@@ -467,13 +467,22 @@ def insert_ocr_layer(page: fitz.Page, layer: OcrLayer) -> None:
             fitz.get_text_length(text, fontname="helv", fontsize=1), 0.01
         )
         font_size = max(1, min(height * 0.8, width / natural_width))
-        page.insert_text(
-            (left, min(bottom, page.rect.height)),
+        inserted = page.insert_textbox(
+            fitz.Rect(left, top, right, bottom),
             text,
             fontname="helv",
             fontsize=font_size,
             render_mode=3,
+            align=fitz.TEXT_ALIGN_LEFT,
         )
+        if inserted < 0:
+            page.insert_text(
+                (left, min(bottom, page.rect.height)),
+                text,
+                fontname="helv",
+                fontsize=font_size,
+                render_mode=3,
+            )
 
 
 def _process_page(

@@ -24,8 +24,19 @@ AVAILABLE_CPUS = (
 MAX_WORKERS = max(1, AVAILABLE_CPUS)
 DEFAULT_WORKERS = min(12, MAX_WORKERS)
 MAX_ENHANCED_WORKERS = min(20, MAX_WORKERS)
-GPU_OPTION = "GPU AMD (DirectML)"
-PROCESSING_OPTIONS = tuple(str(value) for value in range(1, MAX_WORKERS + 1)) + (GPU_OPTION,)
+AMD_GPU_OPTION = "GPU AMD (DirectML)"
+NVIDIA_GPU_OPTION = "GPU NVIDIA (CUDA)"
+GPU_OPTIONS = (AMD_GPU_OPTION, NVIDIA_GPU_OPTION)
+PROCESSING_OPTIONS = tuple(str(value) for value in range(1, MAX_WORKERS + 1)) + GPU_OPTIONS
+
+
+def normalize_gpu_backend(name: str | None) -> str:
+    if not name:
+        return "amd"
+    normalized = str(name).strip().lower()
+    if "nvidia" in normalized or "cuda" in normalized:
+        return "nvidia"
+    return "amd"
 
 
 class OcrCancelled(Exception):
@@ -314,21 +325,33 @@ class RapidOcrReader:
         return list(zip(result.boxes, result.txts, result.scores))
 
 
-def create_gpu_reader(language: str):
+def create_gpu_reader(language: str, backend: str = "amd"):
+    backend = normalize_gpu_backend(backend)
     try:
         onnxruntime = importlib.import_module("onnxruntime")
         rapidocr = importlib.import_module("rapidocr")
     except ImportError as error:
+        missing = "onnxruntime-directml" if backend == "amd" else "onnxruntime-gpu"
         raise RuntimeError(
-            "O modo GPU AMD requer RapidOCR e ONNX Runtime DirectML. "
-            "Instale requirements-gpu.txt."
+            f"O modo GPU {backend.upper()} requer RapidOCR e {missing}. "
+            "Instale o pacote correspondente para a sua placa."
         ) from error
 
-    if "DmlExecutionProvider" not in onnxruntime.get_available_providers():
-        raise RuntimeError(
-            "O DirectML não está disponível. Atualize o driver AMD e instale "
-            "onnxruntime-directml em vez de onnxruntime."
-        )
+    available = set(onnxruntime.get_available_providers())
+    if backend == "amd":
+        if "DmlExecutionProvider" not in available:
+            raise RuntimeError(
+                "O DirectML não está disponível. Atualize o driver AMD e instale "
+                "onnxruntime-directml em vez de onnxruntime."
+            )
+        provider_name = "DmlExecutionProvider"
+    else:
+        if "CUDAExecutionProvider" not in available:
+            raise RuntimeError(
+                "A GPU NVIDIA (CUDA) não está disponível. Instale onnxruntime-gpu e "
+                "confirme que a placa suportada pelo CUDA está funcionando."
+            )
+        provider_name = "CUDAExecutionProvider"
 
     supported_languages = {"por", "eng", "spa"}
     unsupported = set(language.split("+")) - supported_languages
@@ -337,14 +360,19 @@ def create_gpu_reader(language: str):
             f'O idioma "{sorted(unsupported)[0]}" não é compatível com o modo GPU.'
         )
 
-    engine = rapidocr.RapidOCR(
-        params={
-            "EngineConfig.onnxruntime.use_dml": True,
-            "Rec.ocr_version": rapidocr.OCRVersion.PPOCRV5,
-            "Rec.lang_type": rapidocr.LangRec.LATIN,
-            "Rec.model_type": rapidocr.ModelType.MOBILE,
-        }
-    )
+    params = {
+        "Rec.ocr_version": rapidocr.OCRVersion.PPOCRV5,
+        "Rec.lang_type": rapidocr.LangRec.LATIN,
+        "Rec.model_type": rapidocr.ModelType.MOBILE,
+    }
+    if backend == "amd":
+        params["EngineConfig.onnxruntime.use_dml"] = True
+        params["EngineConfig.onnxruntime.use_cuda"] = False
+    else:
+        params["EngineConfig.onnxruntime.use_cuda"] = True
+        params["EngineConfig.onnxruntime.use_dml"] = False
+
+    engine = rapidocr.RapidOCR(params=params)
     return RapidOcrReader(engine)
 
 
@@ -624,6 +652,7 @@ def ocr_pdf(
     progress: Callable[[int, int], None] | None = None,
     workers: int = DEFAULT_WORKERS,
     use_gpu: bool = False,
+    gpu_backend: str = "amd",
     enhance_accuracy: bool = False,
     cancelled: Callable[[], bool] | None = None,
     auto_orient: bool = True,
@@ -631,7 +660,7 @@ def ocr_pdf(
     tessdata = None
     gpu_reader = None
     if use_gpu:
-        gpu_reader = create_gpu_reader(language)
+        gpu_reader = create_gpu_reader(language, gpu_backend)
     else:
         tessdata = find_tessdata()
         languages = available_languages(tessdata)
@@ -939,7 +968,7 @@ class OcrApp:
         ttk.Combobox(options, textvariable=self.dpi, values=("200", "300", "400"), state="readonly").grid(row=3, column=1, sticky="ew", padx=(12, 0), pady=(5, 0))
         ttk.Label(
             options,
-            text=f"CPUs / GPU ({AVAILABLE_CPUS} CPUs disponíveis)",
+            text=f"CPU / GPU ({AVAILABLE_CPUS} CPUs disponíveis)",
             style="Card.TLabel",
         ).grid(row=2, column=2, sticky="w", padx=(12, 0))
         ttk.Combobox(options, textvariable=self.workers, values=PROCESSING_OPTIONS, state="readonly").grid(row=3, column=2, columnspan=2, sticky="ew", padx=(12, 0), pady=(5, 0))
@@ -1061,7 +1090,9 @@ class OcrApp:
             return
         try:
             dpi = int(self.dpi.get())
-            use_gpu = self.workers.get() == GPU_OPTION
+            selected_backend = self.workers.get()
+            use_gpu = selected_backend in GPU_OPTIONS
+            gpu_backend = normalize_gpu_backend(selected_backend) if use_gpu else "amd"
             workers = DEFAULT_WORKERS if use_gpu else int(self.workers.get())
         except ValueError:
             messagebox.showerror(APP_NAME, "Informe valores válidos de DPI e processos.")
@@ -1089,7 +1120,9 @@ class OcrApp:
             self.auto_orient.get(),
         )
         threading.Thread(
-            target=self._process, args=(dpi, workers, use_gpu, *settings), daemon=True
+            target=self._process,
+            args=(dpi, workers, use_gpu, gpu_backend, *settings),
+            daemon=True,
         ).start()
 
     def _process(
@@ -1097,6 +1130,7 @@ class OcrApp:
         dpi: int,
         workers: int,
         use_gpu: bool,
+        gpu_backend: str,
         files: tuple[Path, ...],
         output_dir: Path,
         language: str,
@@ -1122,6 +1156,7 @@ class OcrApp:
                     report,
                     workers,
                     use_gpu,
+                    gpu_backend,
                     enhance_accuracy,
                     self.cancel_event.is_set,
                     auto_orient,
@@ -1179,7 +1214,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-l", "--language", default=DEFAULT_LANGUAGE, help="Idioma do Tesseract")
     parser.add_argument("--dpi", type=int, default=300, choices=(200, 300, 400))
     parser.add_argument("-j", "--workers", type=int, default=DEFAULT_WORKERS, choices=range(1, MAX_WORKERS + 1))
-    parser.add_argument("--gpu", action="store_true", help="Usa RapidOCR com GPU via DirectML")
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Usa RapidOCR em GPU (AMD DirectML ou NVIDIA CUDA)",
+    )
+    parser.add_argument(
+        "--gpu-backend",
+        choices=("amd", "nvidia"),
+        default="amd",
+        help="Backend da GPU: amd para DirectML ou nvidia para CUDA",
+    )
     parser.add_argument("--force", action="store_true", help="Aplica OCR também em páginas com texto")
     parser.add_argument(
         "--enhance",
@@ -1210,6 +1255,7 @@ def main() -> None:
                 args.force,
                 workers=args.workers,
                 use_gpu=args.gpu,
+                gpu_backend=args.gpu_backend,
                 enhance_accuracy=args.enhance,
                 auto_orient=args.auto_orient,
             )

@@ -56,18 +56,36 @@ Ative **OCR aprimorado com OpenCV** em documentos com baixo contraste, fundo irr
 
 ## GPU opcional
 
-O modo GPU usa DirectML no Windows e é compatível com a AMD Radeon RX 580. Instale as dependências opcionais no ambiente do projeto:
+O modo GPU pode usar AMD via DirectML ou NVIDIA via CUDA no Windows. Instale as dependências opcionais no ambiente do projeto:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-gpu.txt
 ```
 
-Mantenha o driver AMD Adrenalin atualizado. O primeiro uso pode baixar o modelo latino PP-OCRv5, utilizado para português, inglês e espanhol.
-
-Na interface, selecione **GPU AMD (DirectML)** em **Processamento**. Pelo terminal, use:
+Depois, instale somente o runtime da sua placa:
 
 ```powershell
-.\.venv\Scripts\python.exe app.py documento.pdf -o saida_ocr --gpu
+# AMD
+.\.venv\Scripts\python.exe -m pip install -r requirements-gpu-amd.txt
+
+# NVIDIA
+.\.venv\Scripts\python.exe -m pip install -r requirements-gpu-nvidia.txt
 ```
 
-O backend GPU usa RapidOCR em uma única fila para evitar disputar a memória de vídeo. Caso o DirectML ou as dependências não estejam disponíveis, o programa mostra uma mensagem explicando o que falta.
+Não instale `onnxruntime-directml` e `onnxruntime-gpu` ao mesmo tempo no mesmo ambiente Python, porque os providers podem conflitar.
+
+Para AMD, mantenha o driver AMD Adrenalin atualizado. Para NVIDIA, instale o driver CUDA compatível com a sua placa e confirme que o runtime GPU está disponível. O primeiro uso pode baixar o modelo latino PP-OCRv5, utilizado para português, inglês e espanhol.
+
+Na interface, selecione **CPU**, **GPU AMD (DirectML)** ou **GPU NVIDIA (CUDA)** em **Processamento**. Pelo terminal, use:
+
+```powershell
+.\.venv\Scripts\python.exe app.py documento.pdf -o saida_ocr --gpu --gpu-backend nvidia
+```
+
+ou
+
+```powershell
+.\.venv\Scripts\python.exe app.py documento.pdf -o saida_ocr --gpu --gpu-backend amd
+```
+
+O backend GPU usa RapidOCR em uma única fila para evitar disputar a memória de vídeo. Caso o DirectML, CUDA ou as dependências não estejam disponíveis, o programa mostra uma mensagem explicando o que falta.

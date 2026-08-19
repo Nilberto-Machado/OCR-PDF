@@ -1,3 +1,5 @@
 -r requirements.txt
 rapidocr>=3.9,<4
-onnxruntime-directml>=1.24,<2
+# Instale apenas UM runtime por ambiente:
+# AMD: onnxruntime-directml>=1.24,<2
+# NVIDIA: onnxruntime-gpu>=1.24,<2

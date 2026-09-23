@@ -1,6 +1,6 @@
 import { preprocessCanvas } from './vision'
 import { useRef, useState } from 'react'
-import { FileText, LockKeyhole, Play, RotateCcw, ScanText, ShieldCheck, Upload, X } from 'lucide-react'
+import { FileText, LockKeyhole, Play, RotateCcw, ScanText, ShieldCheck, Square, Upload, X } from 'lucide-react'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
@@ -60,6 +60,8 @@ function drawOcrLayer(
 
 function App() {
   const inputRef = useRef<HTMLInputElement>(null)
+  const activeWorkerRef = useRef<OcrWorker | null>(null)
+  const cancelRequestedRef = useRef(false)
   const [queue, setQueue] = useState<QueueFile[]>([])
   const [language, setLanguage] = useState('por')
   const [dpi, setDpi] = useState(200)
@@ -154,6 +156,7 @@ function App() {
 
     try {
       for (let pageNumber = 1; pageNumber <= source.numPages; pageNumber += 1) {
+        if (cancelRequestedRef.current) throw new Error('OCR_CANCELLED')
         const pdfPage = await source.getPage(pageNumber)
         const scale = dpi / 72
         const viewport = pdfPage.getViewport({ scale })
@@ -211,10 +214,12 @@ function App() {
 
   const startProcessing = async () => {
     if (isProcessing || !queue.length) return
+    cancelRequestedRef.current = false
     setIsProcessing(true)
     const visionOptions = { enhance, autoOrient }
     const { createWorker } = await import('tesseract.js')
     const worker = await createWorker(language, 1, { logger: (event) => { if (event.status === 'recognizing text') setMessage(`OCR da pagina ativa: ${Math.round(event.progress * 100)}%`) } })
+    activeWorkerRef.current = worker
     let hadErrors = false
     try {
       const pending = queue.filter((entry) => entry.status === 'ready' && entry.pages > 0)
@@ -224,20 +229,40 @@ function App() {
         return
       }
       for (const item of pending) {
+        if (cancelRequestedRef.current) break
         setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: 'processing' } : entry))
         try {
           const outputUrl = await processDocument(item, worker, visionOptions)
+          if (cancelRequestedRef.current) {
+            URL.revokeObjectURL(outputUrl)
+            setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: 'ready', progress: 0 } : entry))
+            break
+          }
           setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: 'done', progress: 1, outputUrl } : entry))
         } catch (error) {
+          if (cancelRequestedRef.current) {
+            setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: 'ready', progress: 0 } : entry))
+            break
+          }
           hadErrors = true
           console.error(error); setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: 'error' } : entry)); setMessage('Nao foi possivel concluir um documento')
         }
       }
     } finally {
-      await worker.terminate()
+      if (activeWorkerRef.current === worker) await worker.terminate()
+      activeWorkerRef.current = null
+      setIsProcessing(false)
     }
-    setIsProcessing(false)
-    setMessage(hadErrors ? 'Processamento concluído com arquivos não processados' : 'Processamento concluído no seu dispositivo')
+    setMessage(cancelRequestedRef.current ? 'Processamento cancelado' : hadErrors ? 'Processamento concluído com arquivos não processados' : 'Processamento concluído no seu dispositivo')
+  }
+
+  const cancelProcessing = () => {
+    if (!isProcessing || cancelRequestedRef.current) return
+    cancelRequestedRef.current = true
+    setMessage('Cancelando processamento...')
+    const worker = activeWorkerRef.current
+    activeWorkerRef.current = null
+    if (worker) void worker.terminate()
   }
 
   const clearQueue = () => { queue.forEach((item) => item.outputUrl && URL.revokeObjectURL(item.outputUrl)); setQueue([]); setPreviewUrl(undefined); setMessage('Pronto para receber documentos') }
@@ -258,7 +283,7 @@ function App() {
     <section className="workspace"><div className="main-column"><div className={`dropzone ${isDragging ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setIsDragging(true) }} onDragLeave={() => setIsDragging(false)} onDrop={(event) => { event.preventDefault(); setIsDragging(false); void addFiles(event.dataTransfer.files) }} onClick={() => inputRef.current?.click()}><input ref={inputRef} type="file" accept="application/pdf,.pdf" multiple hidden onChange={(event) => { if (event.target.files) void addFiles(event.target.files); event.target.value = '' }} /><div className="upload-icon"><Upload size={22} /></div><div><strong>Solte seus PDFs aqui</strong><span>ou clique para escolher arquivos</span></div><kbd>PDF</kbd></div>
       <div className="section-heading"><div><span className="eyebrow">FILA DE PROCESSAMENTO</span><h2>Documentos <small>{queue.length}</small></h2></div>{queue.length > 0 && <button className="text-button" onClick={clearQueue}><RotateCcw size={15} /> Limpar fila</button>}</div>
       <div className="queue-list">{!queue.length && <div className="empty-state"><FileText size={22} /><span>Adicione um PDF para começar</span></div>}{queue.map((item) => <div className="queue-item" key={item.id}><div className="file-icon"><FileText size={18} /></div><div className="file-meta"><strong>{item.file.name}</strong><span>{item.pages} página{item.pages !== 1 ? 's' : ''} · {(item.file.size / 1024 / 1024).toFixed(1)} MB</span>{item.mode && <span className="detected-mode">{item.mode}</span>}{item.status === 'processing' && <div className="progress-track"><i style={{ width: `${Math.max(3, item.progress * 100)}%` }} /></div>}</div><span className={`status ${item.status}`}>{item.status === 'ready' ? (item.pages > 0 ? 'Pronto' : 'Lendo...') : item.status === 'processing' ? `${Math.round(item.progress * 100)}%` : item.status === 'done' ? 'Concluído' : 'Erro'}</span>{item.outputUrl && <a className="download-link" href={item.outputUrl} download={`${item.file.name.replace(/\.pdf$/i, '')}_OCR.pdf`}>Baixar</a>}<button className="icon-button" aria-label={`Remover ${item.file.name}`} onClick={(event) => { event.stopPropagation(); setQueue((current) => current.filter((entry) => entry.id !== item.id)) }}><X size={16} /></button></div>)}</div>
-      <div className="action-row"><span className="status-line"><span className={`status-dot ${isProcessing || isAddingFiles ? 'working' : ''}`} />{message}</span><button className="primary-button" disabled={!queue.length || isProcessing || isAddingFiles} onClick={() => void startProcessing()}><Play size={16} fill="currentColor" /> {isAddingFiles ? 'Lendo PDF...' : isProcessing ? 'Processando...' : 'Executar OCR'}</button></div></div>
+      <div className="action-row"><span className="status-line"><span className={`status-dot ${isProcessing || isAddingFiles ? 'working' : ''}`} />{message}</span><div className="action-buttons">{isProcessing && <button className="cancel-button" onClick={cancelProcessing}><Square size={15} fill="currentColor" /> Cancelar</button>}<button className="primary-button" disabled={!queue.length || isProcessing || isAddingFiles} onClick={() => void startProcessing()}><Play size={16} fill="currentColor" /> {isAddingFiles ? 'Lendo PDF...' : isProcessing ? 'Processando...' : 'Executar OCR'}</button></div></div></div>
       <aside className="side-column"><div className="preview-panel"><div className="panel-title"><span>PRÉVIA</span><span className="page-badge">{queue.length ? 'PÁG. 01' : 'AGUARDANDO'}</span></div><div className="preview-canvas">{previewUrl ? <img src={previewUrl} alt="Prévia da primeira página" /> : <div className="preview-placeholder"><ScanText size={30} /><span>A prévia da primeira<br />página aparecerá aqui</span></div>}</div></div><div className="settings-panel"><div className="panel-title"><span>CONFIGURAÇÃO</span><span className="local-chip"><ShieldCheck size={13} /> LOCAL</span></div><label>Idioma<select value={language} onChange={(event) => setLanguage(event.target.value)}>{languageOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label>Qualidade<select value={dpi} onChange={(event) => setDpi(Number(event.target.value))}><option value={150}>150 DPI · rápido</option><option value={200}>200 DPI · equilibrado</option><option value={300}>300 DPI · detalhado</option></select></label><div className="vision-options"><label><input type="checkbox" checked={autoOrient} onChange={(event) => setAutoOrient(event.target.checked)} /> Corrigir inclinação, rotação e espelhamento</label><label><input type="checkbox" checked={enhance} onChange={(event) => setEnhance(event.target.checked)} /> Melhorar contraste e reduzir ruído</label></div><div className="backend-row"><span>Execução</span><strong><span className="green-dot" /> WebAssembly + OpenCV.js</strong></div></div></aside></section>
     <footer><span>Clark PDF · Clark Solutions</span><span>Processamento 100% local · Nenhum arquivo é enviado</span></footer>
   </main>
